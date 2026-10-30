@@ -1,0 +1,24 @@
+name: Respaldo diario de la base de datos
+
+on:
+  schedule:
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+
+jobs:
+  respaldo:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Crear respaldo
+        shell: bash
+        env:
+          DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+        run: |
+          docker run --rm -e DATABASE_URL postgres:18 sh -c 'pg_dump "$DATABASE_URL" --no-owner --no-privileges' | gzip > respaldo-$(date +%F).sql.gz
+          ls -lh respaldo-*.sql.gz
+      - name: Guardar respaldo
+        uses: actions/upload-artifact@v4
+        with:
+          name: respaldo-billar
+          path: respaldo-*.sql.gz
+          retention-days: 30
