@@ -1,0 +1,1 @@
+window.BILLAR_API = (location.port === '63342') ? 'http://localhost:8080' : location.origin;

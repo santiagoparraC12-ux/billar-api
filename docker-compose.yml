@@ -1,0 +1,16 @@
+# Base de datos PostgreSQL para pruebas locales y producción pequeña.
+# Uso: docker compose up -d
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: billar
+      POSTGRES_USER: billar
+      POSTGRES_PASSWORD: cambia-esta-clave
+    ports:
+      - "5432:5432"
+    volumes:
+      - billar_data:/var/lib/postgresql/data
+volumes:
+  billar_data:
