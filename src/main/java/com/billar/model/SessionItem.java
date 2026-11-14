@@ -22,5 +22,6 @@ public class SessionItem {
     private long price;
     private long cost;
     private int qty;
+    private Long playerId;
 
 }

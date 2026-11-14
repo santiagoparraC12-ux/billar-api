@@ -39,17 +39,41 @@ public class PosController {
 
     @PostMapping("/sessions/{id}/items")
     public SessionView add(@PathVariable Long id, @Valid @RequestBody ItemReq r, Authentication auth) {
-        return pos.addItem(id, r.productId(), auth.getName());
+        return pos.addItem(id, r.productId(), r.playerId(), auth.getName());
     }
 
     @DeleteMapping("/sessions/{id}/items/{productId}")
-    public SessionView remove(@PathVariable Long id, @PathVariable Long productId, Authentication auth) {
-        return pos.removeItem(id, productId, auth.getName());
+    public SessionView remove(@PathVariable Long id, @PathVariable Long productId,
+                              @RequestParam(required = false) Long playerId, Authentication auth) {
+        return pos.removeItem(id, productId, playerId, auth.getName());
     }
 
     @PostMapping("/sessions/{id}/charge")
     public SaleView charge(@PathVariable Long id, @Valid @RequestBody ChargeReq r, Authentication auth) {
         return pos.charge(id, r, auth.getName());
+    }
+
+    @PostMapping("/sessions/{id}/players")
+    public SessionView addPlayer(@PathVariable Long id, @Valid @RequestBody PlayerReq r, Authentication auth) {
+        return pos.addPlayer(id, r.name(), auth.getName());
+    }
+
+    @PostMapping("/sessions/{id}/series/start")
+    public SessionView startSeries(@PathVariable Long id, Authentication auth) { return pos.startSeries(id, auth.getName()); }
+
+    @PostMapping("/sessions/{id}/series/end")
+    public SessionView endSeries(@PathVariable Long id, @Valid @RequestBody LoserReq r, Authentication auth) {
+        return pos.endSeries(id, r.loserId(), auth.getName());
+    }
+
+    @PostMapping("/sessions/{id}/charge-players")
+    public List<SaleView> chargePlayers(@PathVariable Long id, @Valid @RequestBody PlayersChargeReq r, Authentication auth) {
+        return pos.chargePlayers(id, r, auth.getName());
+    }
+
+    @PutMapping("/sessions/{id}/items/move")
+    public SessionView moveItem(@PathVariable Long id, @Valid @RequestBody MoveReq r, Authentication auth) {
+        return pos.moveItem(id, r, auth.getName());
     }
 
     @PostMapping("/sales/quick")

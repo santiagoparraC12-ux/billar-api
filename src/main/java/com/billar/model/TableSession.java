@@ -20,6 +20,11 @@ public class TableSession {
     @ManyToOne(fetch = FetchType.LAZY, optional = true)
     @JoinColumn(name = "table_id")
     private PoolTable table;
+    private String label;
+
+    public String getName() { return table != null ? table.getName() : label; }
+    public long getRate() { return table != null ? table.getRatePerHour() : 0; }
+    public Long tableIdOrNull() { return table != null ? table.getId() : null; }
     private Instant startedAt;
     private Instant endedAt;
     private String openedBy;
@@ -27,10 +32,9 @@ public class TableSession {
     private SessionStatus status = SessionStatus.OPEN;
     @OneToMany(mappedBy = "session", cascade = CascadeType.ALL, orphanRemoval = true)
     private List<SessionItem> items = new ArrayList<>();
+    @OneToMany(mappedBy = "session", cascade = CascadeType.ALL, orphanRemoval = true)
+    private List<SessionPlayer> players = new ArrayList<>();
+    @OneToMany(mappedBy = "session", cascade = CascadeType.ALL, orphanRemoval = true)
+    private List<SessionSeries> series = new ArrayList<>();
 
-    private String label;
-
-    public String getName() { return table != null ? table.getName() : label; }
-    public long getRate() { return table != null ? table.getRatePerHour() : 0; }
-    public Long tableIdOrNull() { return table != null ? table.getId() : null; }
 }

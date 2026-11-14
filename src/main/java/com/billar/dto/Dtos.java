@@ -18,7 +18,12 @@ public final class Dtos {
     public record PurchaseReq(@Positive int qty) {}
     public record StartReq(@NotNull Long tableId) {}
     public record TabReq(@NotBlank String label) {}
-    public record ItemReq(@NotNull Long productId) {}
+    public record PlayerReq(@NotBlank String name) {}
+    public record LoserReq(@NotNull Long loserId) {}
+    public record PlayerPay(@NotNull Long playerId, @NotNull PayMethod method, String note) {}
+    public record PlayersChargeReq(@NotNull List<PlayerPay> payments, Long sharedTo) {}
+    public record MoveReq(@NotNull Long productId, Long fromPlayerId, Long toPlayerId, @Positive int qty) {}
+    public record ItemReq(@NotNull Long productId, Long playerId) {}
     public record ChargeReq(@NotNull PayMethod method, String customerName, String note) {}
     public record QuickItem(@NotNull Long productId, @Positive int qty) {}
     public record QuickSaleReq(@NotEmpty List<QuickItem> items, @NotNull PayMethod method, String customerName, String note) {}
@@ -37,9 +42,11 @@ public final class Dtos {
     public record TableView(Long id, String name, long ratePerHour) {}
     /** cost solo se llena para el dueño. */
     public record ProductView(Long id, String name, long price, Long cost, int stock) {}
-    public record ItemView(Long productId, String name, long price, int qty) {}
-    public record SessionView(Long id, Long tableId, String tableName, Long ratePerHour, Instant startedAt,
-                              Instant serverNow, List<ItemView> items, long itemsTotal, long timeValueSoFar) {}
+    public record ItemView(Long productId, String name, long price, int qty, Long playerId) {}
+    public record PlayerView(Long id, String name, int seriesLost, long timeValue, long itemsTotal, long total) {}
+    public record SessionView(Long id, Long tableId, String tableName, long ratePerHour, Instant startedAt,
+                              Instant serverNow, List<ItemView> items, long itemsTotal, long timeValueSoFar,
+                              List<PlayerView> players, Instant seriesStartedAt) {}
     public record SaleItemView(String name, long price, int qty) {}
     public record SaleView(Long id, SaleType type, String tableName, Instant startedAt, Instant endedAt, int billedMinutes,
                            long timeValue, long itemsTotal, long total, PayMethod method, String customerName, String note,

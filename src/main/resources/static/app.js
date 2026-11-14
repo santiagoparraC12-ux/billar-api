@@ -122,10 +122,21 @@ function mesaCard(t){
       <button class="btn primary" data-a="start" data-id="${t.id}">Iniciar mesa</button></article>`;
   }
   const n = s.items.reduce((a,i) => a + i.qty, 0);
+  const reloj = !s.players.length
+    ? `<div class="clock" data-timer data-start="${esc(s.startedAt)}">00:00:00</div>
+    <p class="sub">Inició a las ${fmtTime(s.startedAt)}. Tiempo hasta ahora: <b data-est data-start="${esc(s.startedAt)}" data-rate="${s.ratePerHour}"></b></p>`
+    : (s.seriesStartedAt
+      ? `<div class="clock" data-timer data-start="${esc(s.seriesStartedAt)}">00:00:00</div><p class="sub">Serie en juego</p>`
+      : `<div class="clock">En pausa</div><p class="sub">El tiempo corre solo durante las series</p>`);
+  const deudas = s.players.map(p => `<div class="row"><span>${esc(p.name)} <small>(${p.seriesLost} perdidas)</small></span><b>${money(p.total)}</b></div>`).join('');
+  const serie = s.players.length < 2 ? '' : (s.seriesStartedAt
+    ? `<button class="btn primary" data-a="endseries" data-id="${s.id}">Terminó la serie</button>`
+    : `<button class="btn" data-a="startseries" data-id="${s.id}">Iniciar serie</button>`);
   return `<article class="mesa ocupada"><div class="mhead"><h3>${esc(t.name)}</h3><span class="rate">${money(t.ratePerHour)} por hora</span></div>
-    <div class="clock" data-timer data-start="${esc(s.startedAt)}">00:00:00</div>
-    <p class="sub">Inició a las ${fmtTime(s.startedAt)}. Tiempo hasta ahora: <b data-est data-start="${esc(s.startedAt)}" data-rate="${s.ratePerHour}"></b></p>
+    ${reloj}
+    ${deudas}
     <p class="sub">Consumos: ${n} producto${n===1?'':'s'}, ${money(s.itemsTotal)}</p>
+    <div class="btns"><button class="btn" data-a="players" data-id="${s.id}">Jugadores</button>${serie}</div>
     <div class="btns"><button class="btn" data-a="items" data-id="${s.id}">Consumos</button><button class="btn primary" data-a="charge" data-id="${s.id}">Cobrar</button></div></article>`;
 }
 
@@ -270,9 +281,16 @@ function checkPay(f){
 const sheets = {
   items(){
     const s = sessionOf(sheet.id);
-    const lines = s.items.map(i => `<li><div class="grow">${i.qty} × ${esc(i.name)}</div><span>${money(i.price*i.qty)}</span><button class="link" data-a="rem" data-pid="${i.productId}">Quitar 1</button></li>`).join('') || '<li class="empty">Toca un producto para agregarlo a la cuenta.</li>';
+    const sel = sheet.player ?? null;                    // null = consumo general
+    const who = id => (s.players.find(p => p.id === id) || {}).name;
+    const quien = s.players.length
+      ? `<div class="chips" role="group" aria-label="Para quién">
+           <button class="chip ${sel===null?'on':''}" data-a="pick-player" data-pid="">General</button>
+           ${s.players.map(p => `<button class="chip ${sel===p.id?'on':''}" data-a="pick-player" data-pid="${p.id}">${esc(p.name)}</button>`).join('')}
+         </div><p class="muted">Se carga a: <b>${sel===null ? 'General' : esc(who(sel))}</b></p>` : '';
+    const lines = s.items.map(i => `<li><div class="grow">${i.qty} × ${esc(i.name)}${s.players.length ? ' <span class="tag">'+(i.playerId ? esc(who(i.playerId)) : 'General')+'</span>' : ''}</div><span>${money(i.price*i.qty)}</span>${s.players.length ? `<button class="link" data-a="move" data-pid="${i.productId}" data-player="${i.playerId ?? ''}">Mover</button>` : ''}<button class="link" data-a="rem" data-pid="${i.productId}" data-player="${i.playerId ?? ''}">Quitar 1</button></li>`).join('') || '<li class="empty">Toca un producto para agregarlo a la cuenta.</li>';
     const prods = D.products.map(p => `<button class="prod" data-a="add" data-pid="${p.id}" ${p.stock<=0?'disabled':''}><b>${esc(p.name)}</b><span>${money(p.price)}</span><small>${p.stock<=0?'Agotado':p.stock+' disponibles'}</small></button>`).join('');
-    return head(s.tableName) + `<div class="prodgrid">${prods}</div><h4>En la cuenta</h4><ul class="lines">${lines}</ul>
+    return head(s.tableName) + quien + `<div class="prodgrid">${prods}</div><h4>En la cuenta</h4><ul class="lines">${lines}</ul>
       <div class="row total"><span>Consumos</span><b>${money(s.itemsTotal)}</b></div>
       <div class="actions"><button class="btn primary" data-a="close-sheet">Listo</button></div>`;
   },
@@ -357,9 +375,66 @@ const sheets = {
       `<label for="nP">Nueva contraseña (mínimo 8 caracteres)</label><input id="nP" type="password" autocomplete="new-password">
        <div class="actions"><button class="btn" data-a="close-sheet">Cancelar</button><button class="btn primary" data-a="save-pw">Guardar</button></div>`;
   },
+  players(){
+    const s = sessionOf(sheet.id);
+    const list = s.players.map(p => `<li><div class="grow"><b>${esc(p.name)}</b><div class="muted">${p.seriesLost} series perdidas, debe ${money(p.total)}</div></div></li>`).join('') || '<li class="empty">Aún no hay jugadores.</li>';
+    return head('Jugadores de '+s.tableName) +
+      `<p class="muted">Con jugadores el tiempo se cobra por series: el que pierde paga el tiempo de su serie y cada consumo va al jugador que elijas o queda general; al cobrar, los generales los paga quien perdió. Agrega mínimo dos para iniciar series.</p>
+       <ul class="lines">${list}</ul>
+       <label for="plName">Nombre del jugador</label><input id="plName" autocomplete="off">
+       <div class="actions"><button class="btn" data-a="close-sheet">Listo</button><button class="btn primary" data-a="save-player">Agregar</button></div>`;
+  },
+  endseries(){
+    const s = sessionOf(sheet.id);
+    return head('¿Quién perdió la serie?') +
+      `<p class="muted">El tiempo de la serie se detiene y se le cobra a quien perdió.</p>
+       <div class="prodgrid">${s.players.map(p => `<button class="prod" data-a="pick-loser" data-pid="${p.id}"><b>${esc(p.name)}</b><small>${p.seriesLost} perdidas</small></button>`).join('')}</div>
+       <div class="actions"><button class="btn" data-a="close-sheet">Cancelar</button></div>`;
+  },
+  cp(){
+    const s = sessionOf(sheet.id);
+    const lista = its => `<ul class="lines">${its.map(i => `<li><div class="grow">${i.qty} × ${esc(i.name)}</div><span>${money(i.price*i.qty)}</span></li>`).join('')}</ul>`;
+    const generales = s.items.filter(i => i.playerId === undefined);
+    const totGen = generales.reduce((a,i) => a + i.price*i.qty, 0);
+    if (generales.length && !s.players.some(p => p.id === sheet.shared)) {
+      sheet.shared = s.players.reduce((b,p) => p.seriesLost > b.seriesLost ? p : b, s.players[0]).id;   // por defecto, el que más series perdió
+    }
+    const general = generales.length
+      ? `<div class="card"><div class="row"><b>Consumos generales</b><b>${money(totGen)}</b></div>
+         <details><summary>Ver ${generales.length} producto${generales.length===1?'':'s'}</summary>${lista(generales)}</details>
+         <label for="sharedTo">¿Quién perdió? Él paga los consumos generales</label>
+         <select id="sharedTo" data-change="shared">${s.players.map(p => `<option value="${p.id}" ${sheet.shared===p.id?'selected':''}>${esc(p.name)}</option>`).join('')}</select></div>` : '';
+    const rows = s.players.map(p => {
+      const propios = s.items.filter(i => i.playerId === p.id);
+      const total = p.total + (generales.length && sheet.shared === p.id ? totGen : 0);
+      if (!total) return `<div class="card"><b>${esc(p.name)}</b><p class="muted">No debe nada.</p></div>`;
+      const m = sheet.methods[p.id] || 'CASH';
+      return `<div class="card"><div class="row"><b>${esc(p.name)}</b><b>${money(total)}</b></div>
+        <p class="muted">${p.seriesLost} series perdidas: ${money(p.timeValue)}. Consumos: ${money(total - p.timeValue)}.</p>
+        ${propios.length ? `<details><summary>Sus consumos (${propios.length})</summary>${lista(propios)}</details>` : ''}
+        <div class="methods">${Object.keys(methodLabel).map(k => `<label><input type="radio" name="m${p.id}" value="${k}" data-change="pmethod" data-pid="${p.id}" ${m===k?'checked':''}>${methodLabel[k]}</label>`).join('')}</div>
+        <div id="note${p.id}" ${m==='COURTESY'?'':'hidden'}><input id="noteIn${p.id}" placeholder="Motivo de la cortesía"></div></div>`;
+    }).join('');
+    return head('Cobrar '+s.tableName) + general + rows +
+      `<div class="actions"><button class="btn" data-a="close-sheet">Volver</button><button class="btn primary" data-a="confirm-cp">Registrar cobros</button></div>`;
+  },
+  move(){
+    const s = sessionOf(sheet.id);
+    const it = s.items.find(i => i.productId === sheet.pid && (i.playerId ?? null) === sheet.from);
+    if (!it){ sheet = {type:'items', id:sheet.id}; return sheets.items(); }
+    sheet.qty = Math.min(sheet.qty, it.qty);
+    const who = id => (s.players.find(p => p.id === id) || {}).name;
+    const destinos = [{id:null, name:'General'}].concat(s.players).filter(d => d.id !== sheet.from);
+    return head('Mover consumo') +
+      `<p><b>${it.qty} × ${esc(it.name)}</b> <span class="tag">${sheet.from === null ? 'General' : esc(who(sheet.from))}</span></p>
+       <div class="row"><span>Cuántas unidades</span><span><button class="btn small" data-a="mv-qty" data-d="-1">−</button> <b>${sheet.qty}</b> <button class="btn small" data-a="mv-qty" data-d="1">+</button></span></div>
+       <p class="muted">Mover a:</p>
+       <div class="chips">${destinos.map(d => `<button class="chip ${sheet.to===d.id?'on':''}" data-a="mv-to" data-pid="${d.id ?? ''}">${esc(d.name)}</button>`).join('')}</div>
+       <div class="actions"><button class="btn" data-a="mv-back">Volver</button><button class="btn primary" data-a="mv-ok" ${sheet.to===undefined?'disabled':''}>Mover</button></div>`;
+  },
   newtab(){
     return head('Nueva cuenta') +
-        `<p class="muted">Escribe a quién o a qué mesa le llevas la cuenta. Ejemplos: Mesa 3, Juan, Barra.</p>
+      `<p class="muted">Escribe a quién o a qué mesa le vas a llevar la cuenta. Ejemplos: Mesa 3, Juan, Barra.</p>
        <label for="tabName">Nombre o mesa</label><input id="tabName" autocomplete="off">
        <div class="actions"><button class="btn" data-a="close-sheet">Cancelar</button><button class="btn primary" data-a="save-tab">Abrir cuenta</button></div>`;
   },
@@ -429,13 +504,13 @@ const A = {
   async start(d){ const s = await api('/api/sessions', 'POST', {tableId:Number(d.id)}); replaceSession(s); render(); },
   items(d){ sheet = {type:'items', id:Number(d.id)}; render(); },
   async add(d){
-    const s = await api('/api/sessions/'+sheet.id+'/items', 'POST', {productId:Number(d.pid)});
+    const s = await api('/api/sessions/'+sheet.id+'/items', 'POST', {productId:Number(d.pid), playerId:sheet.player});
     replaceSession(s);
     const p = D.products.find(x => x.id === Number(d.pid)); if (p) p.stock--;
     render();
   },
   async rem(d){
-    const s = await api('/api/sessions/'+sheet.id+'/items/'+d.pid, 'DELETE');
+    const s = await api('/api/sessions/'+sheet.id+'/items/'+d.pid+(d.player ? '?playerId='+d.player : ''), 'DELETE');
     replaceSession(s);
     const p = D.products.find(x => x.id === Number(d.pid)); if (p) p.stock++;
     render();
@@ -443,7 +518,9 @@ const A = {
   async charge(d){
     await loadSessions();
     if (!sessionOf(Number(d.id))){ render(); return toast('Esa mesa ya fue cobrada'); }
-    sheet = {type:'charge', id:Number(d.id), method:'CASH', cust:'', reason:''}; render();
+    if (sessionOf(Number(d.id)).players.length) sheet = {type:'cp', id:Number(d.id), methods:{}, shared:null};
+    else sheet = {type:'charge', id:Number(d.id), method:'CASH', cust:'', reason:''};
+    render();
   },
   async 'confirm-charge'(){
     const f = payFields(); if (!checkPay(f)) return;
@@ -474,8 +551,7 @@ const A = {
     loadProducts().then(render).catch(()=>{});
   },
 
-  /* caja */
-  /* cuentas abiertas */
+  /* cuentas abiertas (personas o mesas que consumen sin jugar) */
   newtab(){ sheet = {type:'newtab'}; render(); },
   async 'save-tab'(){
     const label = $('#tabName').value.trim();
@@ -485,6 +561,53 @@ const A = {
     replaceSession(s);
     sheet = {type:'items', id:s.id}; render();
   },
+
+  /* jugadores y series */
+  players(d){ sheet = {type:'players', id:Number(d.id)}; render(); },
+  async 'save-player'(){
+    const name = $('#plName').value.trim();
+    if (!name) return toast('Escribe el nombre del jugador');
+    replaceSession(await api('/api/sessions/'+sheet.id+'/players', 'POST', {name})); render();
+  },
+  'pick-player'(d){ sheet.player = d.pid ? Number(d.pid) : null; render(); },
+  async startseries(d){ replaceSession(await api('/api/sessions/'+d.id+'/series/start', 'POST')); render(); },
+  endseries(d){ sheet = {type:'endseries', id:Number(d.id)}; render(); },
+  async 'pick-loser'(d){
+    replaceSession(await api('/api/sessions/'+sheet.id+'/series/end', 'POST', {loserId:Number(d.pid)}));
+    sheet = null; render();
+  },
+  async 'confirm-cp'(){
+    const s = sessionOf(sheet.id);
+    const generales = s.items.filter(i => i.playerId === undefined);
+    const totGen = generales.reduce((a,i) => a + i.price*i.qty, 0);
+    const payments = [];
+    for (const p of s.players){
+      if (!(p.total + (generales.length && sheet.shared === p.id ? totGen : 0))) continue;
+      const method = sheet.methods[p.id] || 'CASH';
+      const note = ($('#noteIn'+p.id) ? $('#noteIn'+p.id).value : '').trim();
+      if (method === 'COURTESY' && !note) return toast('Escribe el motivo de la cortesía de '+p.name);
+      payments.push({playerId:p.id, method, note});
+    }
+    const sales = await api('/api/sessions/'+s.id+'/charge-players', 'POST', {payments, sharedTo: generales.length ? sheet.shared : undefined});
+    D.sessions = D.sessions.filter(x => x.id !== s.id);
+    sheet = null; render(); toast('Cobro registrado: '+money(sales.reduce((a,x) => a + x.total, 0)));
+    loadProducts().then(render).catch(()=>{});
+  },
+
+  /* mover consumos entre General y los jugadores */
+  move(d){ sheet = {type:'move', id:sheet.id, pid:Number(d.pid), from:d.player ? Number(d.player) : null, qty:1, to:undefined}; render(); },
+  'mv-qty'(d){
+    const it = sessionOf(sheet.id).items.find(i => i.productId === sheet.pid && (i.playerId ?? null) === sheet.from);
+    sheet.qty = Math.max(1, Math.min(it ? it.qty : 1, sheet.qty + Number(d.d))); render();
+  },
+  'mv-to'(d){ sheet.to = d.pid ? Number(d.pid) : null; render(); },
+  'mv-back'(){ sheet = {type:'items', id:sheet.id}; render(); },
+  async 'mv-ok'(){
+    replaceSession(await api('/api/sessions/'+sheet.id+'/items/move', 'PUT', {productId:sheet.pid, fromPlayerId:sheet.from, toPlayerId:sheet.to, qty:sheet.qty}));
+    sheet = {type:'items', id:sheet.id}; render();
+  },
+
+  /* caja */
   expense(){ sheet = {type:'expense'}; render(); },
   async 'save-expense'(){
     const c = $('#exC').value.trim(), v = num($('#exA').value);
@@ -498,8 +621,9 @@ const A = {
     if (raw === '') return toast('Escribe el efectivo contado');
     const r = await api('/api/cash/close', 'POST', {countedCash:num(raw)});
     const msg = r.difference === undefined ? r.message : (r.difference === 0 ? 'Turno cerrado. La caja cuadra.' : 'Turno cerrado. Diferencia: '+money(r.difference));
-    logout();
-    toast(msg.replace(/\.$/, '') + '. Sesión cerrada.', 6000);  },
+    logout();   // al cerrar el turno se cierra la sesión de quien lo cerró
+    toast(msg.replace(/\.$/, '') + '. Sesión cerrada.', 6000);
+  },
 
   /* productos e inventario */
   prod(d){ if (!isOwner()) return; sheet = {type:'prod', id:d.id === 'new' ? 'new' : Number(d.id)}; render(); },
@@ -590,6 +714,12 @@ document.addEventListener('click', async e => {
   if (e.target.id === 'sheet') closeSheet();
 });
 document.addEventListener('change', e => {
+  const c = e.target.dataset ? e.target.dataset.change : '';
+  if (c === 'pmethod' && sheet){
+    sheet.methods[e.target.dataset.pid] = e.target.value;
+    $('#note'+e.target.dataset.pid).hidden = e.target.value !== 'COURTESY';
+  }
+  if (c === 'shared' && sheet){ sheet.shared = Number(e.target.value); render(); }
   if (e.target.dataset && e.target.dataset.change === 'method' && sheet){
     sheet.method = e.target.value;
     $('#fiadoBox').hidden = sheet.method !== 'CREDIT';

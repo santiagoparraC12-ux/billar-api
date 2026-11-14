@@ -9,7 +9,9 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 /** Mesas, consumos, cobros, ventas rápidas, anulaciones y fiados. */
 @Service
@@ -58,17 +60,20 @@ public class PosService {
     }
 
     @Transactional
-    public SessionView addItem(Long sessionId, Long productId, String user) {
+    public SessionView addItem(Long sessionId, Long productId, Long playerId, String user) {
         TableSession s = open(sessionId);
         Product p = products.findById(productId).filter(Product::isActive)
                 .orElseThrow(() -> ApiException.notFound("El producto no existe"));
         if (p.getStock() <= 0) throw ApiException.conflict("Sin stock de " + p.getName());
         p.setStock(p.getStock() - 1);
-        SessionItem item = s.getItems().stream().filter(i -> i.getProductId().equals(productId)).findFirst().orElse(null);
+        Long player = playerOf(s, playerId);
+        SessionItem item = s.getItems().stream()
+                .filter(i -> i.getProductId().equals(productId) && Objects.equals(i.getPlayerId(), player)).findFirst().orElse(null);
         if (item == null) {
             item = new SessionItem();
             item.setSession(s);
             item.setProductId(productId);
+            item.setPlayerId(player);
             item.setName(p.getName());
             item.setPrice(p.getPrice());
             item.setCost(p.getCost());
@@ -80,9 +85,10 @@ public class PosService {
     }
 
     @Transactional
-    public SessionView removeItem(Long sessionId, Long productId, String user) {
+    public SessionView removeItem(Long sessionId, Long productId, Long playerId, String user) {
         TableSession s = open(sessionId);
-        SessionItem item = s.getItems().stream().filter(i -> i.getProductId().equals(productId)).findFirst()
+        SessionItem item = s.getItems().stream()
+                .filter(i -> i.getProductId().equals(productId) && Objects.equals(i.getPlayerId(), s.getPlayers().isEmpty() ? null : playerId)).findFirst()
                 .orElseThrow(() -> ApiException.notFound("Ese producto no está en la cuenta"));
         products.findById(productId).ifPresent(p -> p.setStock(p.getStock() + 1));
         item.setQty(item.getQty() - 1);
@@ -235,13 +241,179 @@ public class PosService {
         sessions.save(s);
         audit.log(user, "Abrió cuenta: " + s.getLabel());
         return view(s, Instant.now());
-    }private SessionView view(TableSession s, Instant now) {
+    }
+
+    // ---------- jugadores y series ----------
+    @Transactional
+    public SessionView addPlayer(Long sessionId, String name, String user) {
+        TableSession s = open(sessionId);
+        String n = name.trim();
+        if (s.getPlayers().stream().anyMatch(p -> p.getName().equalsIgnoreCase(n))) {
+            throw ApiException.conflict("Ya hay un jugador con ese nombre");
+        }
+        SessionPlayer p = new SessionPlayer();
+        p.setSession(s);
+        p.setName(n);
+        s.getPlayers().add(p);
+        sessions.flush();   // para que el jugador ya tenga su id al devolver la vista
+        audit.log(user, "Agregó al jugador " + n + " en " + s.getName());
+        return view(s, Instant.now());
+    }
+
+    @Transactional
+    public SessionView startSeries(Long sessionId, String user) {
+        TableSession s = open(sessionId);
+        if (s.getTable() == null) throw ApiException.badRequest("Las series son solo para mesas de billar");
+        if (s.getPlayers().size() < 2) throw ApiException.badRequest("Agrega al menos dos jugadores");
+        if (runningSeries(s) != null) throw ApiException.conflict("Ya hay una serie en juego");
+        SessionSeries x = new SessionSeries();
+        x.setSession(s);
+        x.setStartedAt(Instant.now());
+        s.getSeries().add(x);
+        audit.log(user, "Inició una serie en " + s.getName());
+        return view(s, Instant.now());
+    }
+
+    /** Cierra la serie en juego: el tiempo se detiene y se le cobra al jugador que perdió. */
+    @Transactional
+    public SessionView endSeries(Long sessionId, Long loserId, String user) {
+        TableSession s = open(sessionId);
+        SessionSeries x = runningSeries(s);
+        if (x == null) throw ApiException.conflict("No hay una serie en juego");
+        SessionPlayer loser = s.getPlayers().stream().filter(p -> Objects.equals(p.getId(), loserId)).findFirst()
+                .orElseThrow(() -> ApiException.badRequest("Ese jugador no está en la mesa"));
+        Instant end = Instant.now();
+        Duration d = Duration.between(x.getStartedAt(), end);
+        int step = settings.get().getBillingStepMinutes();
+        x.setEndedAt(end);
+        x.setLoserId(loserId);
+        x.setBilledMinutes(billing.billedMinutes(d, step));
+        x.setTimeValue(billing.timeValue(d, s.getRate(), step));
+        audit.log(user, "Serie terminada en " + s.getName() + ": perdió " + loser.getName()
+                + ", " + x.getBilledMinutes() + " min por " + x.getTimeValue());
+        return view(s, end);
+    }
+
+    /** Mueve unidades de un consumo entre General (sin jugador) y los jugadores; la cuenta sigue abierta hasta el cobro. */
+    @Transactional
+    public SessionView moveItem(Long sessionId, MoveReq req, String user) {
+        TableSession s = open(sessionId);
+        playerOf(s, req.fromPlayerId());
+        playerOf(s, req.toPlayerId());
+        if (Objects.equals(req.fromPlayerId(), req.toPlayerId())) throw ApiException.badRequest("El origen y el destino son el mismo");
+        SessionItem from = s.getItems().stream()
+                .filter(i -> i.getProductId().equals(req.productId()) && Objects.equals(i.getPlayerId(), req.fromPlayerId())).findFirst()
+                .orElseThrow(() -> ApiException.notFound("Ese consumo no está en la cuenta"));
+        if (req.qty() > from.getQty()) throw ApiException.badRequest("No hay tantas unidades para mover");
+        SessionItem to = s.getItems().stream()
+                .filter(i -> i.getProductId().equals(req.productId()) && Objects.equals(i.getPlayerId(), req.toPlayerId())).findFirst().orElse(null);
+        if (to == null) {
+            to = new SessionItem();
+            to.setSession(s);
+            to.setProductId(from.getProductId());
+            to.setName(from.getName());
+            to.setPrice(from.getPrice());
+            to.setCost(from.getCost());
+            to.setPlayerId(req.toPlayerId());
+            to.setQty(0);
+            s.getItems().add(to);
+        }
+        to.setQty(to.getQty() + req.qty());
+        from.setQty(from.getQty() - req.qty());
+        if (from.getQty() == 0) s.getItems().remove(from);
+        audit.log(user, "Movió " + req.qty() + " x " + from.getName() + " en " + s.getName());
+        return view(s, Instant.now());
+    }
+
+    /** Una venta por jugador: sus series perdidas + sus consumos. Los consumos generales (sin jugador) los paga quien perdió (sharedTo). */
+    @Transactional
+    public List<SaleView> chargePlayers(Long sessionId, PlayersChargeReq req, String user) {
+        TableSession s = open(sessionId);
+        if (runningSeries(s) != null) throw ApiException.conflict("Hay una serie en juego: termínala antes de cobrar");
+        boolean generales = s.getItems().stream().anyMatch(i -> i.getPlayerId() == null);
+        if (generales && s.getPlayers().stream().noneMatch(p -> Objects.equals(p.getId(), req.sharedTo()))) {
+            throw ApiException.badRequest("Elige quién perdió: él paga los consumos generales");
+        }
+        Instant end = Instant.now();
+        List<Sale> result = new ArrayList<>();
+        for (SessionPlayer p : s.getPlayers()) {
+            PlayerView pv = playerView(s, p, req.sharedTo());
+            if (pv.total() == 0) continue;
+            PlayerPay pay = req.payments().stream().filter(x -> Objects.equals(x.playerId(), p.getId())).findFirst()
+                    .orElseThrow(() -> ApiException.badRequest("Falta el pago de " + p.getName()));
+            validate(pay.method(), p.getName(), pay.note());
+            List<SessionSeries> lost = s.getSeries().stream()
+                    .filter(x -> x.getEndedAt() != null && Objects.equals(x.getLoserId(), p.getId())).toList();
+            Sale sale = new Sale();
+            sale.setType(SaleType.TABLE);
+            sale.setTableName(s.getName() + " - " + p.getName());
+            sale.setStartedAt(s.getStartedAt());
+            sale.setEndedAt(end);
+            sale.setActualSeconds(lost.stream().mapToLong(x -> Duration.between(x.getStartedAt(), x.getEndedAt()).toSeconds()).sum());
+            sale.setBilledMinutes(lost.stream().mapToInt(SessionSeries::getBilledMinutes).sum());
+            sale.setTimeValue(pv.timeValue());
+            for (SessionItem i : s.getItems()) {
+                if (Objects.equals(i.getPlayerId(), p.getId()) || (i.getPlayerId() == null && Objects.equals(req.sharedTo(), p.getId()))) {
+                    sale.getItems().add(toSaleItem(sale, i));
+                }
+            }
+            finish(sale, pay.method(), p.getName(), pay.note(), user);
+            result.add(sale);
+        }
+        s.setStatus(SessionStatus.CLOSED);
+        s.setEndedAt(end);
+        audit.log(user, "Cobró " + s.getName() + " por jugador: " + result.size() + " ventas, total "
+                + result.stream().mapToLong(Sale::getTotal).sum());
+        return result.stream().map(SaleView::of).toList();
+    }
+
+    private SaleItem toSaleItem(Sale sale, SessionItem i) {
+        SaleItem si = new SaleItem();
+        si.setSale(sale);
+        si.setProductId(i.getProductId());
+        si.setName(i.getName());
+        si.setPrice(i.getPrice());
+        si.setCost(i.getCost());
+        si.setQty(i.getQty());
+        return si;
+    }
+
+    private SessionSeries runningSeries(TableSession s) {
+        return s.getSeries().stream().filter(x -> x.getEndedAt() == null).findFirst().orElse(null);
+    }
+
+    /** El consumo va a un jugador de la mesa o queda general (sin jugador). */
+    private Long playerOf(TableSession s, Long playerId) {
+        if (playerId != null && s.getPlayers().stream().noneMatch(p -> Objects.equals(p.getId(), playerId))) {
+            throw ApiException.badRequest("Ese jugador no está en la mesa");
+        }
+        return playerId;
+    }
+
+    /** Lo que debe un jugador: tiempo de las series que perdió + sus consumos (+ los generales, si él los paga). */
+    private PlayerView playerView(TableSession s, SessionPlayer p, Long sharedTo) {
+        List<SessionSeries> lost = s.getSeries().stream()
+                .filter(x -> x.getEndedAt() != null && Objects.equals(x.getLoserId(), p.getId())).toList();
+        long time = lost.stream().mapToLong(SessionSeries::getTimeValue).sum();
+        long items = s.getItems().stream()
+                .filter(i -> Objects.equals(i.getPlayerId(), p.getId()) || (i.getPlayerId() == null && Objects.equals(sharedTo, p.getId())))
+                .mapToLong(i -> i.getPrice() * i.getQty()).sum();
+        return new PlayerView(p.getId(), p.getName(), lost.size(), time, items, time + items);
+    }
+
+    private SessionView view(TableSession s, Instant now) {
         int step = settings.get().getBillingStepMinutes();
         List<ItemView> items = s.getItems().stream()
-                .map(i -> new ItemView(i.getProductId(), i.getName(), i.getPrice(), i.getQty())).toList();
+                .map(i -> new ItemView(i.getProductId(), i.getName(), i.getPrice(), i.getQty(), i.getPlayerId())).toList();
         long itemsTotal = items.stream().mapToLong(i -> i.price() * i.qty()).sum();
-        long tv = billing.timeValue(Duration.between(s.getStartedAt(), now), s.getRate(), step);
-        return new SessionView(s.getId(), s.tableIdOrNull(), s.getName(), s.getRate(),
-                s.getStartedAt(), now, items, itemsTotal, tv);
+        SessionSeries running = runningSeries(s);
+        // con jugadores solo se cobran las series; sin jugadores, todo el tiempo de la mesa
+        long tv = s.getPlayers().isEmpty()
+                ? billing.timeValue(Duration.between(s.getStartedAt(), now), s.getRate(), step)
+                : s.getSeries().stream().mapToLong(x -> x.getEndedAt() == null
+                        ? billing.timeValue(Duration.between(x.getStartedAt(), now), s.getRate(), step) : x.getTimeValue()).sum();
+        List<PlayerView> players = s.getPlayers().stream().map(p -> playerView(s, p, null)).toList();
+        return new SessionView(s.getId(), s.tableIdOrNull(), s.getName(), s.getRate(), s.getStartedAt(), now,
+                items, itemsTotal, tv, players, running == null ? null : running.getStartedAt());
     }
 }
